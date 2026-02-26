@@ -340,3 +340,75 @@ def test_cli_arg_max_websocket_connections_default():
                 assert node.value.value == 100
                 break
     assert found, "max_websocket_connections field not found in FrontendArgs"
+
+
+def _ensure_api_router_importable():
+    """Stub the heavy transitive dependencies of api_router.py so it can be
+    imported on machines without torch / regex / openai / PIL etc.
+
+    Must be called *before* importing api_router for the first time.
+    """
+    from unittest.mock import MagicMock
+    from pydantic import BaseModel
+
+    _stub_modules = {
+        "vllm.entrypoints.openai.engine.protocol": {
+            "ErrorResponse": type("ErrorResponse", (BaseModel,), {}),
+        },
+        "vllm.entrypoints.openai.responses.protocol": {
+            "ResponsesRequest": type("ResponsesRequest", (BaseModel,), {}),
+            "ResponsesResponse": type("ResponsesResponse", (BaseModel,), {}),
+            "StreamingResponsesResponse": type(
+                "StreamingResponsesResponse", (BaseModel,), {}
+            ),
+        },
+        "vllm.entrypoints.openai.responses.serving": {
+            "OpenAIServingResponses": MagicMock(),
+        },
+        "vllm.entrypoints.openai.utils": {
+            "validate_json_request": MagicMock(),
+        },
+        "vllm.entrypoints.utils": {
+            "load_aware_call": lambda f: f,
+            "with_cancellation": lambda f: f,
+        },
+    }
+    for modname, attrs in _stub_modules.items():
+        if modname not in sys.modules:
+            mod = types.ModuleType(modname)
+            for k, v in attrs.items():
+                setattr(mod, k, v)
+            sys.modules[modname] = mod
+
+
+@pytest.mark.asyncio
+async def test_websocket_route_rejects_when_limit_reached():
+    """WebSocket route sends connection_limit_reached when at max."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, PropertyMock
+
+    _ensure_api_router_importable()
+    from vllm.entrypoints.openai.responses.api_router import (
+        create_responses_websocket,
+    )
+
+    ws = AsyncMock()
+    # Simulate app state at limit
+    app_state = MagicMock()
+    app_state.openai_serving_responses = MagicMock()
+    app_state.ws_responses_active_connections = 5
+    app_state.ws_responses_max_connections = 5
+    app_state.ws_responses_lock = asyncio.Lock()
+
+    app = MagicMock()
+    app.state = app_state
+    type(ws).app = PropertyMock(return_value=app)
+
+    await create_responses_websocket(ws)
+
+    # Should accept, send error, then close
+    ws.accept.assert_called_once()
+    ws.send_text.assert_called_once()
+    payload = json.loads(ws.send_text.call_args[0][0])
+    assert payload["error"]["code"] == "websocket_connection_limit_reached"
+    ws.close.assert_called_once()
