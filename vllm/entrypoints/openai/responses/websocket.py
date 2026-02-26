@@ -18,5 +18,5 @@ def uuid7() -> str:
     hi |= 0x7 << 76  # version 7
     hi |= (int.from_bytes(rand[:2], "big") & 0x0FFF) << 64
     lo = 0x80 << 56  # variant 10
-    lo |= int.from_bytes(rand[2:], "big") & 0x3F_FFFF_FFFF_FFFF
+    lo |= int.from_bytes(rand[2:], "big") & 0x3FFF_FFFF_FFFF_FFFF
     return f"{(hi | lo):032x}"
