@@ -296,3 +296,47 @@ async def test_cleanup_cancels_generation_task():
     await conn.cleanup()
 
     fake_task.cancel.assert_called_once()
+
+
+def test_cli_arg_max_websocket_connections_default():
+    """--max-websocket-connections defaults to 100."""
+    # The FrontendArgs class lives behind a deep import chain that pulls in
+    # torch, regex, and other heavy dependencies.  Instead of fighting the
+    # imports we read the source file directly and verify the field with a
+    # simple AST / text check.  This is robust on machines without CUDA.
+    import ast
+    import pathlib
+
+    cli_args_path = (
+        pathlib.Path(__file__).resolve().parents[4]
+        / "vllm"
+        / "entrypoints"
+        / "openai"
+        / "cli_args.py"
+    )
+    source = cli_args_path.read_text()
+    tree = ast.parse(source)
+
+    # Find the FrontendArgs class
+    frontend_cls = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == "FrontendArgs":
+            frontend_cls = node
+            break
+    assert frontend_cls is not None, "FrontendArgs class not found"
+
+    # Find the max_websocket_connections field
+    found = False
+    for node in ast.walk(frontend_cls):
+        if isinstance(node, ast.AnnAssign):
+            target = node.target
+            if isinstance(target, ast.Name) and target.id == "max_websocket_connections":
+                found = True
+                # Check annotation is int
+                assert isinstance(node.annotation, ast.Name)
+                assert node.annotation.id == "int"
+                # Check default value is 100
+                assert isinstance(node.value, ast.Constant)
+                assert node.value.value == 100
+                break
+    assert found, "max_websocket_connections field not found in FrontendArgs"
