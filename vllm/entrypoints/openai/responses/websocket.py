@@ -195,3 +195,74 @@ class WebSocketResponsesConnection:
         if last_response is not None:
             self.ctx.last_response_id = last_response.id
             self.ctx.last_response = last_response
+
+    async def handle_connection(self) -> None:
+        """Main WebSocket connection loop."""
+        from starlette.websockets import WebSocketDisconnect
+
+        await self.websocket.accept()
+        logger.debug("WebSocket responses connection accepted: %s",
+                      self.ctx.connection_id)
+        self._is_connected = True
+
+        # Start deadline enforcement task
+        self._deadline_task = asyncio.create_task(
+            self._enforce_deadline()
+        )
+
+        try:
+            while True:
+                message = await self.websocket.receive_text()
+                try:
+                    event = json_module.loads(message)
+                    await self.handle_event(event)
+                except json_module.JSONDecodeError:
+                    await self.send_error("invalid_json", "Invalid JSON")
+                except Exception as e:
+                    logger.exception("Error handling event: %s", e)
+                    await self.send_error("processing_error", str(e), 500)
+        except WebSocketDisconnect:
+            logger.debug("WebSocket disconnected: %s",
+                         self.ctx.connection_id)
+            self._is_connected = False
+        except Exception as e:
+            logger.exception("Unexpected error in connection %s: %s",
+                             self.ctx.connection_id, e)
+        finally:
+            await self.cleanup()
+
+    async def _enforce_deadline(self) -> None:
+        """Background task: warn at WARNING_SECONDS, close at
+        LIFETIME_SECONDS."""
+        try:
+            warn_delay = (self.ctx.WARNING_SECONDS
+                         - (time.monotonic() - self.ctx.created_at))
+            if warn_delay > 0:
+                await asyncio.sleep(warn_delay)
+            if self._is_connected:
+                await self.send_error(
+                    "connection_expiring",
+                    "Connection will close in 5 minutes",
+                )
+
+            close_delay = (self.ctx.LIFETIME_SECONDS
+                          - (time.monotonic() - self.ctx.created_at))
+            if close_delay > 0:
+                await asyncio.sleep(close_delay)
+            if self._is_connected:
+                self._is_connected = False
+                await self.websocket.close(
+                    code=1000,
+                    reason="Connection lifetime exceeded",
+                )
+        except asyncio.CancelledError:
+            pass
+
+    async def cleanup(self) -> None:
+        """Release resources on disconnect."""
+        if self._deadline_task and not self._deadline_task.done():
+            self._deadline_task.cancel()
+        if self._generation_task and not self._generation_task.done():
+            self._generation_task.cancel()
+        logger.debug("Connection cleanup complete: %s",
+                     self.ctx.connection_id)

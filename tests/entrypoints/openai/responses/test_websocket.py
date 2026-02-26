@@ -9,10 +9,6 @@ import types
 
 import pytest
 
-# Mock torch and heavy vllm dependencies so this unit-test module can run
-# on machines without torch / CUDA.  Must happen before any ``from vllm …``
-# import because ``vllm/__init__.py`` transitively imports torch via
-# ``vllm.env_override``.
 # ---------------------------------------------------------------------------
 # Lightweight shim so the test module can be collected and run on machines
 # that do **not** have torch / CUDA / numpy installed.
@@ -224,3 +220,79 @@ async def test_handle_event_previous_response_not_found():
     payload = json.loads(ws.send_text.call_args[0][0])
     assert payload["error"]["code"] == "previous_response_not_found"
     assert not conn.ctx.inflight
+
+
+@pytest.mark.asyncio
+async def test_handle_connection_accept_and_receive_loop():
+    """handle_connection accepts, processes messages, handles disconnect."""
+    from unittest.mock import AsyncMock
+    from starlette.websockets import WebSocketDisconnect
+    from vllm.entrypoints.openai.responses.websocket import (
+        WebSocketResponsesConnection,
+    )
+
+    ws = AsyncMock()
+    serving = AsyncMock()
+    conn = WebSocketResponsesConnection(ws, serving)
+
+    # Simulate: one valid message, then disconnect
+    ws.receive_text.side_effect = [
+        '{"type": "response.create", "model": "m", "input": "hi"}',
+        WebSocketDisconnect(),
+    ]
+    # Mock _process_response_create directly to avoid lazy imports
+    # of protocol modules that transitively require torch.
+    conn._process_response_create = AsyncMock(
+        side_effect=Exception("mock engine down"),
+    )
+
+    await conn.handle_connection()
+
+    ws.accept.assert_called_once()
+    assert not conn._is_connected
+
+
+@pytest.mark.asyncio
+async def test_handle_connection_invalid_json():
+    """Invalid JSON sends error but keeps connection open."""
+    from unittest.mock import AsyncMock
+    from starlette.websockets import WebSocketDisconnect
+    from vllm.entrypoints.openai.responses.websocket import (
+        WebSocketResponsesConnection,
+    )
+
+    ws = AsyncMock()
+    serving = AsyncMock()
+    conn = WebSocketResponsesConnection(ws, serving)
+
+    ws.receive_text.side_effect = [
+        "not valid json{{{",
+        WebSocketDisconnect(),
+    ]
+
+    await conn.handle_connection()
+
+    first_call = ws.send_text.call_args_list[0]
+    payload = json.loads(first_call[0][0])
+    assert payload["error"]["code"] == "invalid_json"
+
+
+@pytest.mark.asyncio
+async def test_cleanup_cancels_generation_task():
+    """cleanup cancels in-flight generation task."""
+    from unittest.mock import AsyncMock, MagicMock
+    from vllm.entrypoints.openai.responses.websocket import (
+        WebSocketResponsesConnection,
+    )
+
+    ws = AsyncMock()
+    serving = AsyncMock()
+    conn = WebSocketResponsesConnection(ws, serving)
+
+    fake_task = MagicMock()
+    fake_task.done.return_value = False
+    conn._generation_task = fake_task
+
+    await conn.cleanup()
+
+    fake_task.cancel.assert_called_once()
