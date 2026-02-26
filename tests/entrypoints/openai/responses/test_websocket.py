@@ -73,6 +73,7 @@ def test_connection_context_defaults():
 def test_connection_context_is_expired():
     """ConnectionContext.is_expired checks against LIFETIME_SECONDS."""
     from unittest.mock import patch
+
     from vllm.entrypoints.openai.responses.websocket import ConnectionContext
 
     ctx = ConnectionContext(connection_id="ws-test")
@@ -85,6 +86,7 @@ def test_connection_context_is_expired():
 def test_connection_context_should_warn():
     """ConnectionContext.should_warn checks against WARNING_SECONDS."""
     from unittest.mock import patch
+
     from vllm.entrypoints.openai.responses.websocket import ConnectionContext
 
     ctx = ConnectionContext(connection_id="ws-test")
@@ -110,6 +112,7 @@ def test_connection_context_evict_cache():
 async def test_send_error_format():
     """send_error sends JSON in the OpenAI error event format."""
     from unittest.mock import AsyncMock
+
     from vllm.entrypoints.openai.responses.websocket import (
         WebSocketResponsesConnection,
     )
@@ -133,7 +136,9 @@ async def test_send_error_format():
 async def test_send_event_serializes_pydantic():
     """send_event serializes a Pydantic model and sends as text."""
     from unittest.mock import AsyncMock
+
     from pydantic import BaseModel
+
     from vllm.entrypoints.openai.responses.websocket import (
         WebSocketResponsesConnection,
     )
@@ -158,6 +163,7 @@ async def test_send_event_serializes_pydantic():
 async def test_handle_event_unknown_type():
     """Unknown event type sends error, keeps connection open."""
     from unittest.mock import AsyncMock
+
     from vllm.entrypoints.openai.responses.websocket import (
         WebSocketResponsesConnection,
     )
@@ -177,6 +183,7 @@ async def test_handle_event_unknown_type():
 async def test_handle_event_concurrent_request_rejected():
     """Second response.create while inflight returns concurrent_request error."""
     from unittest.mock import AsyncMock
+
     from vllm.entrypoints.openai.responses.websocket import (
         WebSocketResponsesConnection,
     )
@@ -201,6 +208,7 @@ async def test_handle_event_concurrent_request_rejected():
 async def test_handle_event_previous_response_not_found():
     """previous_response_id not in cache returns error."""
     from unittest.mock import AsyncMock
+
     from vllm.entrypoints.openai.responses.websocket import (
         WebSocketResponsesConnection,
     )
@@ -226,7 +234,9 @@ async def test_handle_event_previous_response_not_found():
 async def test_handle_connection_accept_and_receive_loop():
     """handle_connection accepts, processes messages, handles disconnect."""
     from unittest.mock import AsyncMock
+
     from starlette.websockets import WebSocketDisconnect
+
     from vllm.entrypoints.openai.responses.websocket import (
         WebSocketResponsesConnection,
     )
@@ -256,7 +266,9 @@ async def test_handle_connection_accept_and_receive_loop():
 async def test_handle_connection_invalid_json():
     """Invalid JSON sends error but keeps connection open."""
     from unittest.mock import AsyncMock
+
     from starlette.websockets import WebSocketDisconnect
+
     from vllm.entrypoints.openai.responses.websocket import (
         WebSocketResponsesConnection,
     )
@@ -281,6 +293,7 @@ async def test_handle_connection_invalid_json():
 async def test_cleanup_cancels_generation_task():
     """cleanup cancels in-flight generation task."""
     from unittest.mock import AsyncMock, MagicMock
+
     from vllm.entrypoints.openai.responses.websocket import (
         WebSocketResponsesConnection,
     )
@@ -330,7 +343,8 @@ def test_cli_arg_max_websocket_connections_default():
     for node in ast.walk(frontend_cls):
         if isinstance(node, ast.AnnAssign):
             target = node.target
-            if isinstance(target, ast.Name) and target.id == "max_websocket_connections":
+            if (isinstance(target, ast.Name)
+                    and target.id == "max_websocket_connections"):
                 found = True
                 # Check annotation is int
                 assert isinstance(node.annotation, ast.Name)
@@ -349,6 +363,7 @@ def _ensure_api_router_importable():
     Must be called *before* importing api_router for the first time.
     """
     from unittest.mock import MagicMock
+
     from pydantic import BaseModel
 
     _stub_modules = {
