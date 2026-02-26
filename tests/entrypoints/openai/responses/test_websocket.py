@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import json
 import re
 import time
+
+import pytest
 
 
 def test_uuid7_format():
@@ -86,3 +89,51 @@ def test_connection_context_evict_cache():
     ctx.evict_cache()
     assert ctx.last_response_id is None
     assert ctx.last_response is None
+
+
+@pytest.mark.asyncio
+async def test_send_error_format():
+    """send_error sends JSON in the OpenAI error event format."""
+    from unittest.mock import AsyncMock
+    from vllm.entrypoints.openai.responses.websocket import (
+        WebSocketResponsesConnection,
+    )
+
+    ws = AsyncMock()
+    serving = AsyncMock()
+    conn = WebSocketResponsesConnection(ws, serving)
+
+    await conn.send_error("previous_response_not_found",
+                          "Response not found", 400)
+
+    ws.send_text.assert_called_once()
+    payload = json.loads(ws.send_text.call_args[0][0])
+    assert payload["type"] == "error"
+    assert payload["status"] == 400
+    assert payload["error"]["code"] == "previous_response_not_found"
+    assert payload["error"]["message"] == "Response not found"
+
+
+@pytest.mark.asyncio
+async def test_send_event_serializes_pydantic():
+    """send_event serializes a Pydantic model and sends as text."""
+    from unittest.mock import AsyncMock
+    from pydantic import BaseModel
+    from vllm.entrypoints.openai.responses.websocket import (
+        WebSocketResponsesConnection,
+    )
+
+    class FakeEvent(BaseModel):
+        type: str = "response.created"
+        data: str = "hello"
+
+    ws = AsyncMock()
+    serving = AsyncMock()
+    conn = WebSocketResponsesConnection(ws, serving)
+
+    await conn.send_event(FakeEvent())
+
+    ws.send_text.assert_called_once()
+    payload = json.loads(ws.send_text.call_args[0][0])
+    assert payload["type"] == "response.created"
+    assert payload["data"] == "hello"

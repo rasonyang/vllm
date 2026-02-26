@@ -1,13 +1,24 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import asyncio
+import json as json_module
 import os
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar
 
+from pydantic import BaseModel
+
+from vllm.logger import init_logger
+
 if TYPE_CHECKING:
+    from fastapi import WebSocket
+
     from vllm.entrypoints.openai.responses.protocol import ResponsesResponse
+    from vllm.entrypoints.openai.responses.serving import OpenAIServingResponses
+
+logger = init_logger(__name__)
 
 
 def uuid7() -> str:
@@ -49,3 +60,33 @@ class ConnectionContext:
     def evict_cache(self) -> None:
         self.last_response_id = None
         self.last_response = None
+
+
+class WebSocketResponsesConnection:
+    """Manages WebSocket lifecycle for Responses API WebSocket mode."""
+
+    def __init__(self, websocket: "WebSocket",
+                 serving: "OpenAIServingResponses"):
+        self.websocket = websocket
+        self.serving = serving
+        self.ctx = ConnectionContext(connection_id=f"ws-{uuid7()}")
+        self._is_connected = False
+        self._generation_task: asyncio.Task | None = None
+        self._deadline_task: asyncio.Task | None = None
+
+    async def send_event(self, event: BaseModel) -> None:
+        """Send a Pydantic event as JSON text over WebSocket."""
+        await self.websocket.send_text(event.model_dump_json())
+
+    async def send_error(self, code: str, message: str,
+                         status: int = 400) -> None:
+        """Send an error event in the OpenAI WebSocket error format."""
+        payload = json_module.dumps({
+            "type": "error",
+            "status": status,
+            "error": {
+                "code": code,
+                "message": message,
+            },
+        })
+        await self.websocket.send_text(payload)
