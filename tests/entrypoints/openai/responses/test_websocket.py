@@ -36,3 +36,53 @@ def test_uuid7_uniqueness():
 
     ids = [uuid7() for _ in range(1000)]
     assert len(set(ids)) == 1000
+
+
+def test_connection_context_defaults():
+    """ConnectionContext initializes with correct defaults."""
+    from vllm.entrypoints.openai.responses.websocket import ConnectionContext
+
+    ctx = ConnectionContext(connection_id="ws-test123")
+    assert ctx.connection_id == "ws-test123"
+    assert ctx.last_response_id is None
+    assert ctx.last_response is None
+    assert ctx.inflight is False
+    assert ctx.created_at > 0
+    assert ConnectionContext.LIFETIME_SECONDS == 3600
+    assert ConnectionContext.WARNING_SECONDS == 3300
+
+
+def test_connection_context_is_expired():
+    """ConnectionContext.is_expired checks against LIFETIME_SECONDS."""
+    from unittest.mock import patch
+    from vllm.entrypoints.openai.responses.websocket import ConnectionContext
+
+    ctx = ConnectionContext(connection_id="ws-test")
+    assert not ctx.is_expired()
+
+    with patch("time.monotonic", return_value=ctx.created_at + 3601):
+        assert ctx.is_expired()
+
+
+def test_connection_context_should_warn():
+    """ConnectionContext.should_warn checks against WARNING_SECONDS."""
+    from unittest.mock import patch
+    from vllm.entrypoints.openai.responses.websocket import ConnectionContext
+
+    ctx = ConnectionContext(connection_id="ws-test")
+    assert not ctx.should_warn()
+
+    with patch("time.monotonic", return_value=ctx.created_at + 3301):
+        assert ctx.should_warn()
+
+
+def test_connection_context_evict_cache():
+    """evict_cache clears last_response_id and last_response."""
+    from vllm.entrypoints.openai.responses.websocket import ConnectionContext
+
+    ctx = ConnectionContext(connection_id="ws-test")
+    ctx.last_response_id = "resp_abc"
+    ctx.last_response = "fake_response"  # type: ignore
+    ctx.evict_cache()
+    assert ctx.last_response_id is None
+    assert ctx.last_response is None
