@@ -380,11 +380,11 @@ async def init_app_state(
 
     # WebSocket Responses mode connection tracking
     if "generate" in supported_tasks:
-        import asyncio as _asyncio
+        import asyncio
         state.ws_responses_active_connections = 0
         state.ws_responses_max_connections = getattr(
             args, "max_websocket_connections", 100)
-        state.ws_responses_lock = _asyncio.Lock()
+        state.ws_responses_lock = asyncio.Lock()
 
 
 def create_server_socket(addr: tuple[str, int]) -> socket.socket:

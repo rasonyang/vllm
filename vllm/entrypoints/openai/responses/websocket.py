@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import asyncio
-import json as json_module
+import json
 import os
 import time
 from dataclasses import dataclass, field
@@ -71,7 +71,6 @@ class WebSocketResponsesConnection:
         self.serving = serving
         self.ctx = ConnectionContext(connection_id=f"ws-{uuid7()}")
         self._is_connected = False
-        self._generation_task: asyncio.Task | None = None
         self._deadline_task: asyncio.Task | None = None
 
     async def send_event(self, event: BaseModel) -> None:
@@ -81,7 +80,7 @@ class WebSocketResponsesConnection:
     async def send_error(self, code: str, message: str,
                          status: int = 400) -> None:
         """Send an error event in the OpenAI WebSocket error format."""
-        payload = json_module.dumps({
+        payload = json.dumps({
             "type": "error",
             "status": status,
             "error": {
@@ -147,16 +146,33 @@ class WebSocketResponsesConnection:
         payload["stream"] = True
         payload.pop("background", None)
 
+        # Strip previous_response_id from the payload before constructing
+        # ResponsesRequest. The WebSocket handler already validated it
+        # against the connection-local cache in handle_event(). Passing
+        # it through would cause the serving layer to look it up in the
+        # shared response_store and fail.
+        payload.pop("previous_response_id", None)
+
         request = ResponsesRequest(**payload)
 
         if not generate:
-            # Warmup mode: emit created + completed, no inference
+            # Warmup mode: emit created + completed, no inference.
+            # Populate all required ResponsesResponse fields from request.
             response = ResponsesResponse(
                 id=request.request_id,
                 created_at=int(time.time()),
                 model=request.model or "",
                 output=[],
                 status="completed",
+                parallel_tool_calls=request.parallel_tool_calls or True,
+                temperature=request.temperature or 1.0,
+                tool_choice=request.tool_choice,
+                tools=request.tools,
+                top_p=request.top_p or 1.0,
+                background=request.background or False,
+                max_output_tokens=request.max_output_tokens or 0,
+                service_tier=request.service_tier,
+                truncation=request.truncation or "disabled",
             )
             await self.send_event(ResponseCreatedEvent(response=response))
             await self.send_event(ResponseCompletedEvent(response=response))
@@ -169,7 +185,7 @@ class WebSocketResponsesConnection:
 
         if isinstance(result, ErrorResponse):
             await self.send_error(
-                "processing_error", result.error.message, result.error.code
+                result.error.type, result.error.message, result.error.code
             )
             self.ctx.evict_cache()
             return
@@ -214,9 +230,9 @@ class WebSocketResponsesConnection:
             while True:
                 message = await self.websocket.receive_text()
                 try:
-                    event = json_module.loads(message)
+                    event = json.loads(message)
                     await self.handle_event(event)
-                except json_module.JSONDecodeError:
+                except json.JSONDecodeError:
                     await self.send_error("invalid_json", "Invalid JSON")
                 except Exception as e:
                     logger.exception("Error handling event: %s", e)
@@ -224,11 +240,11 @@ class WebSocketResponsesConnection:
         except WebSocketDisconnect:
             logger.debug("WebSocket disconnected: %s",
                          self.ctx.connection_id)
-            self._is_connected = False
         except Exception as e:
             logger.exception("Unexpected error in connection %s: %s",
                              self.ctx.connection_id, e)
         finally:
+            self._is_connected = False
             await self.cleanup()
 
     async def _enforce_deadline(self) -> None:
@@ -257,12 +273,13 @@ class WebSocketResponsesConnection:
                 )
         except asyncio.CancelledError:
             pass
+        except Exception:
+            logger.debug("Deadline task error (connection likely closed): %s",
+                         self.ctx.connection_id)
 
     async def cleanup(self) -> None:
         """Release resources on disconnect."""
         if self._deadline_task and not self._deadline_task.done():
             self._deadline_task.cancel()
-        if self._generation_task and not self._generation_task.done():
-            self._generation_task.cancel()
         logger.debug("Connection cleanup complete: %s",
                      self.ctx.connection_id)

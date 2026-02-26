@@ -290,8 +290,8 @@ async def test_handle_connection_invalid_json():
 
 
 @pytest.mark.asyncio
-async def test_cleanup_cancels_generation_task():
-    """cleanup cancels in-flight generation task."""
+async def test_cleanup_cancels_deadline_task():
+    """cleanup cancels the deadline task if still running."""
     from unittest.mock import AsyncMock, MagicMock
 
     from vllm.entrypoints.openai.responses.websocket import (
@@ -304,7 +304,7 @@ async def test_cleanup_cancels_generation_task():
 
     fake_task = MagicMock()
     fake_task.done.return_value = False
-    conn._generation_task = fake_task
+    conn._deadline_task = fake_task
 
     await conn.cleanup()
 

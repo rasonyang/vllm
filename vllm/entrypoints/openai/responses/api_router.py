@@ -147,7 +147,7 @@ async def create_responses_websocket(websocket: WebSocket):
     3. Server streams response events as JSON text frames
     4. Client can use previous_response_id for continuation
     """
-    import json as _json
+    import json
 
     app = websocket.app
     serving = app.state.openai_serving_responses
@@ -162,7 +162,7 @@ async def create_responses_websocket(websocket: WebSocket):
         if (app.state.ws_responses_active_connections
                 >= app.state.ws_responses_max_connections):
             await websocket.accept()
-            await websocket.send_text(_json.dumps({
+            await websocket.send_text(json.dumps({
                 "type": "error",
                 "status": 429,
                 "error": {
