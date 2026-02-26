@@ -3,9 +3,28 @@
 
 import json
 import re
+import sys
 import time
+import types
 
 import pytest
+
+# Mock torch and heavy vllm dependencies so this unit-test module can run
+# on machines without torch / CUDA.  Must happen before any ``from vllm …``
+# import because ``vllm/__init__.py`` transitively imports torch via
+# ``vllm.env_override``.
+# ---------------------------------------------------------------------------
+# Lightweight shim so the test module can be collected and run on machines
+# that do **not** have torch / CUDA / numpy installed.
+#
+# ``vllm/__init__.py`` does ``import vllm.env_override`` which in turn does
+# ``import torch`` at module level.  We short-circuit that by inserting a
+# no-op ``vllm.env_override`` into ``sys.modules`` *before* the real
+# ``vllm`` package is imported.
+# ---------------------------------------------------------------------------
+if "torch" not in sys.modules:
+    # Insert a no-op env_override so vllm/__init__.py skips torch
+    sys.modules["vllm.env_override"] = types.ModuleType("vllm.env_override")
 
 
 def test_uuid7_format():
@@ -137,3 +156,71 @@ async def test_send_event_serializes_pydantic():
     payload = json.loads(ws.send_text.call_args[0][0])
     assert payload["type"] == "response.created"
     assert payload["data"] == "hello"
+
+
+@pytest.mark.asyncio
+async def test_handle_event_unknown_type():
+    """Unknown event type sends error, keeps connection open."""
+    from unittest.mock import AsyncMock
+    from vllm.entrypoints.openai.responses.websocket import (
+        WebSocketResponsesConnection,
+    )
+
+    ws = AsyncMock()
+    serving = AsyncMock()
+    conn = WebSocketResponsesConnection(ws, serving)
+
+    await conn.handle_event({"type": "bogus.event"})
+
+    ws.send_text.assert_called_once()
+    payload = json.loads(ws.send_text.call_args[0][0])
+    assert payload["error"]["code"] == "unknown_event_type"
+
+
+@pytest.mark.asyncio
+async def test_handle_event_concurrent_request_rejected():
+    """Second response.create while inflight returns concurrent_request error."""
+    from unittest.mock import AsyncMock
+    from vllm.entrypoints.openai.responses.websocket import (
+        WebSocketResponsesConnection,
+    )
+
+    ws = AsyncMock()
+    serving = AsyncMock()
+    conn = WebSocketResponsesConnection(ws, serving)
+    conn.ctx.inflight = True
+
+    await conn.handle_event({
+        "type": "response.create",
+        "model": "test-model",
+        "input": "hello",
+    })
+
+    ws.send_text.assert_called_once()
+    payload = json.loads(ws.send_text.call_args[0][0])
+    assert payload["error"]["code"] == "concurrent_request"
+
+
+@pytest.mark.asyncio
+async def test_handle_event_previous_response_not_found():
+    """previous_response_id not in cache returns error."""
+    from unittest.mock import AsyncMock
+    from vllm.entrypoints.openai.responses.websocket import (
+        WebSocketResponsesConnection,
+    )
+
+    ws = AsyncMock()
+    serving = AsyncMock()
+    conn = WebSocketResponsesConnection(ws, serving)
+
+    await conn.handle_event({
+        "type": "response.create",
+        "model": "test-model",
+        "input": "hello",
+        "previous_response_id": "resp_nonexistent",
+    })
+
+    ws.send_text.assert_called_once()
+    payload = json.loads(ws.send_text.call_args[0][0])
+    assert payload["error"]["code"] == "previous_response_not_found"
+    assert not conn.ctx.inflight

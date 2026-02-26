@@ -90,3 +90,108 @@ class WebSocketResponsesConnection:
             },
         })
         await self.websocket.send_text(payload)
+
+    async def handle_event(self, event: dict) -> None:
+        """Parse and dispatch incoming WebSocket events."""
+        event_type = event.get("type")
+
+        if event_type != "response.create":
+            await self.send_error(
+                "unknown_event_type",
+                f"Unknown event type: {event_type}",
+            )
+            return
+
+        # Reject concurrent requests
+        if self.ctx.inflight:
+            await self.send_error(
+                "concurrent_request",
+                "A response is already being generated on this connection",
+                409,
+            )
+            return
+
+        # Resolve previous_response_id from connection-local cache
+        prev_id = event.get("previous_response_id")
+        if prev_id is not None and prev_id != self.ctx.last_response_id:
+            await self.send_error(
+                "previous_response_not_found",
+                f"Response '{prev_id}' not found in connection cache",
+                404,
+            )
+            return
+
+        self.ctx.inflight = True
+        try:
+            await self._process_response_create(event)
+        except Exception as e:
+            logger.exception("Error processing response.create: %s", e)
+            await self.send_error("processing_error", str(e), 500)
+            self.ctx.evict_cache()
+        finally:
+            self.ctx.inflight = False
+
+    async def _process_response_create(self, event: dict) -> None:
+        """Process a response.create event."""
+        from vllm.entrypoints.openai.engine.protocol import ErrorResponse
+        from vllm.entrypoints.openai.responses.protocol import (
+            ResponseCompletedEvent,
+            ResponseCreatedEvent,
+            ResponsesRequest,
+            ResponsesResponse,
+        )
+
+        # Build request payload
+        payload = {k: v for k, v in event.items() if k != "type"}
+        generate = payload.pop("generate", True)
+        payload["stream"] = True
+        payload.pop("background", None)
+
+        request = ResponsesRequest(**payload)
+
+        if not generate:
+            # Warmup mode: emit created + completed, no inference
+            response = ResponsesResponse(
+                id=request.request_id,
+                created_at=int(time.time()),
+                model=request.model or "",
+                output=[],
+                status="completed",
+            )
+            await self.send_event(ResponseCreatedEvent(response=response))
+            await self.send_event(ResponseCompletedEvent(response=response))
+            self.ctx.last_response_id = response.id
+            self.ctx.last_response = response
+            return
+
+        # Call existing serving pipeline (always streaming)
+        result = await self.serving.create_responses(request)
+
+        if isinstance(result, ErrorResponse):
+            await self.send_error(
+                "processing_error", result.error.message, result.error.code
+            )
+            self.ctx.evict_cache()
+            return
+
+        if isinstance(result, ResponsesResponse):
+            # Non-streaming response (shouldn't happen with stream=True)
+            await self.send_event(ResponseCreatedEvent(response=result))
+            await self.send_event(ResponseCompletedEvent(response=result))
+            self.ctx.last_response_id = result.id
+            self.ctx.last_response = result
+            return
+
+        # Streaming: iterate events, forward over WebSocket
+        last_response = None
+        async for event_obj in result:
+            await self.send_event(event_obj)
+            if (hasattr(event_obj, "type")
+                    and event_obj.type == "response.completed"):
+                last_response = getattr(event_obj, "response", None)
+            if not self._is_connected:
+                break
+
+        if last_response is not None:
+            self.ctx.last_response_id = last_response.id
+            self.ctx.last_response = last_response
